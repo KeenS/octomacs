@@ -200,7 +200,7 @@ the specified directory name.  Passes the directory through
   (let ((octopress-directory (file-name-as-directory (expand-file-name directory))))
     (case generatep
       ((4) (octomacs-bg-rake octopress-directory "gen_deploy"))
-      (t (octomacs-bg-rake octopress-directory "deploy")))))
+      (t   (octomacs-bg-rake octopress-directory "deploy")))))
 
 ;;;###autoload
 (defun octomacs-preview (directory &optional generatep)
