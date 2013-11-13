@@ -120,11 +120,17 @@ the specified directory name.  Passes the directory through
          (post-name (octomacs-read-post-name)))
     (list post-name project)))
 
-(defun octomacs-rake (directory task &optional &rest arguments)
+(defun octomacs-rake (directory task &rest arguments)
   "Run rake task TASK with specified ARGUMENTS in DIRECTORY"
   (if (featurep 'rvm)
       (octomacs-rake-with-rvm directory task arguments)
     (octomacs-rake-without-rvm directory task arguments)))
+
+(defun octomacs-bg-rake (directory task &rest arguments)
+  "Run rake task TASK with specified ARGUMENTS in DIRECTORY"
+  (if (featurep 'rvm)
+      (octomacs-bg-rake-with-rvm directory task arguments)
+    (octomacs-bg-rake-without-rvm directory task arguments)))
 
 (defun octomacs-shell-escape-string (string)
   "Escape single quotes in STRING."
@@ -142,14 +148,34 @@ the specified directory name.  Passes the directory through
   (let* ((default-directory (file-name-as-directory (expand-file-name directory)))
          (rvmrc-info (or (rvm--load-info-rvmrc) (rvm--load-info-ruby-version) (rvm--load-info-gemfile)))
          (rvm-command (if rvmrc-info
-                          (concat "rvm " (mapconcat 'identity rvmrc-info "@") " do ")
+                          (format "%s %s do" rvm-executable (mapconcat 'identity rvmrc-info rvm--gemset-separator))
                         "")))
-    (shell-command-to-string (format "%srake %s" rvm-command (octomacs-format-rake-task-with-args task arguments)))))
+    (shell-command-to-string (format "%s rake %s" rvm-command (octomacs-format-rake-task-with-args task arguments)))))
 
 (defun octomacs-rake-without-rvm (directory task &optional arguments)
   "Run rake task TASK with specified ARGUMENTS in DIRECTORY"
   (let ((default-directory (file-name-as-directory (expand-file-name directory))))
     (shell-command-to-string (format "rake %s" (octomacs-format-rake-task-with-args task arguments)))))
+
+(defun octomacs-bg-rake-with-rvm (directory task &optional arguments)
+  "Run rake task TASK with specified ARGUMENTS in DIRECTORY using rvm"
+  (let* ((default-directory (file-name-as-directory (expand-file-name directory)))
+         (rvmrc-info (or (rvm--load-info-rvmrc) (rvm--load-info-ruby-version) (rvm--load-info-gemfile)))
+	 (rvm-command (if rvmrc-info
+                          (format "%s %s do" rvm-executable (mapconcat 'identity rvmrc-info rvm--gemset-separator))
+                        "")))
+    (start-process-shell-command (format "octomacs-rake %s" task)
+				 (format "*octomacs-process* %s" task)
+				 (shell-command-to-string (format "%s rake %s"
+								  rvm-command
+								  (octomacs-format-rake-task-with-args task arguments))))))
+
+(defun octomacs-bg-rake-without-rvm (directory task &optional arguments)
+  "Run rake task TASK with specified ARGUMENTS in DIRECTORY"
+  (let ((default-directory (file-name-as-directory (expand-file-name directory))))
+    (start-process-shell-command (format "octomacs-rake %s" task)
+				 (format "*octomacs %s*" task)
+				 (format "rake %s" (octomacs-format-rake-task-with-args task arguments)))))
 
 ;;; Public interface ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -167,6 +193,28 @@ the specified directory name.  Passes the directory through
         (find-file file-name)
       (message (concat "Unable to create post: " rake-output)))))
 
+;;;###autoload
+(defun octomacs-deploy (directory &optional generatep)
+  "untested function"
+  (interactive (list (octomacs-read-project) "p"))
+  (let ((octopress-directory (file-name-as-directory (expand-file-name directory))))
+    (case generatep
+      ((4) (octomacs-bg-rake octopress-directory "gen_deploy"))
+      (t (octomacs-bg-rake octopress-directory "deploy")))))
+
+;;;###autoload
+(defun octomacs-preview (directory &optional generatep)
+  "untested function"
+  (interactive (list (octomacs-read-project) "p"))
+  (let ((octopress-directory (file-name-as-directory (expand-file-name directory))))
+    (case generatep
+      ((4) (octomacs-bg-rake octopress-directory "generate preview"))
+      (t   (octomacs-bg-rake  octopress-directory "preview")))
+    (browse-url "http://localhost:4000")))
 (provide 'octomacs)
+
+;;;###autoload
+(defun octomacs-edit-post (post)
+  )
 
 ;;; octomacs.el ends here
