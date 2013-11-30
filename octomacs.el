@@ -73,6 +73,11 @@
 
 (defvar octomacs-workdir-history nil
   "Project names & directories recently used with `octomacs'.")
+(defvar octomacs-preview-processes ()
+  "Current `octomacs-preview' process object")
+
+(defun octomacs-subdir-p (dir subdir)
+  (string-match (concat "^" (regexp-quote (expand-file-name  dir))) subdir 0))
 
 (defun octomacs-read-project ()
   "Prompt for a project name (as defined in `octomacs-workdir-alist') or a directory name.
@@ -80,35 +85,49 @@ Returns the directory as defined in `octomacs-workdir-alist' or
 the specified directory name.  Passes the directory through
 `expand-file-name', and `directory-file-name'."
   (let (project-or-dir)
-    (setq project-or-dir (if (featurep 'ido)
-                             (ido-completing-read
-                              "Choose Octopress project: "
-                              (delete-dups (append
-                                            (mapcar 'car octomacs-workdir-alist)
-                                            octomacs-workdir-history))
-                              nil
-                              nil
-                              nil
-                              'octomacs-workdir-history
-                              (car octomacs-workdir-history)
-                              nil)
-                           (completing-read
-                            (format
-                             "Choose Octopress project (default %s): "
-                             (car octomacs-workdir-history))
-                            (delete-dups (append
-                                          (mapcar 'car octomacs-workdir-alist)
-                                          octomacs-workdir-history))
-                            nil
-                            nil
-                            nil
-                            (cons 'octomacs-workdir-history 1)
-                            (car octomacs-workdir-history)
-                            nil)
-                           ))
+    (setq project-or-dir (or  (some #'(lambda (cons)
+					(if (octomacs-subdir-p (cdr cons) default-directory)
+					    (cdr cons)))
+				      octomacs-workdir-alist)
+
+			  (if (featurep 'ido)
+			      (ido-completing-read
+			       "Choose Octopress project: "
+			       (delete-dups (append
+					     (mapcar 'car octomacs-workdir-alist)
+					     octomacs-workdir-history))
+			       nil
+			       nil
+			       nil
+			       'octomacs-workdir-history
+			       (car octomacs-workdir-history)
+			       nil)
+			    (completing-read
+			     (format
+			      "Choose Octopress project (default %s): "
+			      (car octomacs-workdir-history))
+			     (delete-dups (append
+					   (mapcar 'car octomacs-workdir-alist)
+					   octomacs-workdir-history))
+			     nil
+			     nil
+			     nil
+			     (cons 'octomacs-workdir-history 1)
+			     (car octomacs-workdir-history)
+			     nil)
+			    )))
     (directory-file-name (expand-file-name (if (assoc project-or-dir octomacs-workdir-alist)
                                                (cdr (assoc project-or-dir octomacs-workdir-alist))
                                              project-or-dir)))))
+
+(defun octomacs-fetch-process (directory)
+  (some (lambda (proc)
+	  (and
+	   (buffer-live-p (process-buffer proc))
+	   (string-match (concat (regexp-quote (file-name-as-directory directory)) "$")
+			 (file-name-as-directory (process-name proc)))
+	   proc))
+	octomacs-preview-processes))
 
 (defun octomacs-read-post-name ()
   "Prompt for the title to use for a new post."
@@ -164,16 +183,16 @@ the specified directory name.  Passes the directory through
 	 (rvm-command (if rvmrc-info
                           (format "%s %s do" rvm-executable (mapconcat 'identity rvmrc-info rvm--gemset-separator))
                         "")))
-    (start-process-shell-command (format "octomacs-rake %s" task)
-				 (format "*octomacs-process* %s" task)
-				 (shell-command-to-string (format "%s rake %s"
-								  rvm-command
-								  (octomacs-format-rake-task-with-args task arguments))))))
+    (start-process-shell-command (format "octomacs-rake %s %s" task default-directory)
+				 (format "*octomacs %s*" task)
+				 (format "%s rake %s"
+					 rvm-command
+					 (octomacs-format-rake-task-with-args task arguments)))))
 
 (defun octomacs-bg-rake-without-rvm (directory task &optional arguments)
   "Run rake task TASK with specified ARGUMENTS in DIRECTORY"
   (let ((default-directory (file-name-as-directory (expand-file-name directory))))
-    (start-process-shell-command (format "octomacs-rake %s" task)
+    (start-process-shell-command (format "octomacs-rake %s %s" task default-directory)
 				 (format "*octomacs %s*" task)
 				 (format "rake %s" (octomacs-format-rake-task-with-args task arguments)))))
 
@@ -196,25 +215,50 @@ the specified directory name.  Passes the directory through
 ;;;###autoload
 (defun octomacs-deploy (directory &optional generatep)
   "untested function"
-  (interactive (list (octomacs-read-project) "p"))
+  (interactive (list (octomacs-read-project) (prefix-numeric-value current-prefix-arg)))
   (let ((octopress-directory (file-name-as-directory (expand-file-name directory))))
-    (case generatep
-      ((4) (octomacs-bg-rake octopress-directory "gen_deploy"))
-      (t   (octomacs-bg-rake octopress-directory "deploy")))))
+    (if generatep
+      (octomacs-bg-rake octopress-directory "gen_deploy")
+      (octomacs-bg-rake octopress-directory "deploy"))))
 
 ;;;###autoload
-(defun octomacs-preview (directory &optional generatep)
+(defun octomacs-preview (directory)
   "untested function"
-  (interactive (list (octomacs-read-project) "p"))
-  (let ((octopress-directory (file-name-as-directory (expand-file-name directory))))
-    (case generatep
-      ((4) (octomacs-bg-rake octopress-directory "generate preview"))
-      (t   (octomacs-bg-rake  octopress-directory "preview")))
-    (browse-url "http://localhost:4000")))
-(provide 'octomacs)
+  (interactive (list (octomacs-read-project)))
+  (lexical-let* ((octopress-directory (file-name-as-directory (expand-file-name directory)))
+		 (proc (octomacs-bg-rake octopress-directory "preview")))
+    (add-to-list 'octomacs-preview-processes proc)
+    (set-process-filter proc
+			#'(lambda (proc string)
+			    (with-current-buffer (process-buffer proc)
+			      (insert string)
+			      (cond
+			       ((string-match "port=\\([[:digit:]]+\\)" string)
+				(browse-url (concat "http://localhost:" (match-string 1 string))))
+			       ((string-match "regeneration: [[:digit:]]+ files changed" string)
+				(message (match-string 0 string)))))))
+    (with-current-buffer (process-buffer proc)
+      (make-variable-buffer-local 'kill-buffer-hook)
+      (add-hook 'kill-buffer-hook #'(lambda ()
+				      (when (process-live-p proc)
+					(remove proc octomacs-preview-processes)
+					(kill-process proc)))))))
+
+;;;###autoload
+(defun octomacs-kill-preview (directory)
+  "untested function"
+  (interactive (list (octomacs-read-project)))
+  (let* ((octopress-directory (file-name-as-directory directory))
+	 (proc (octomacs-fetch-process octopress-directory)))
+    (when proc
+      (delete proc octomacs-preview-processes)
+      (and (process-live-p proc) (kill-process proc))
+      (kill-buffer (process-buffer proc)))))
 
 ;;;###autoload
 (defun octomacs-edit-post (post)
   )
+
+(provide 'octomacs)
 
 ;;; octomacs.el ends here
